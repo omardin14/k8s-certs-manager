@@ -314,6 +314,7 @@ A beautiful, downloadable HTML file with:
 - **Certificate Details**: Every certificate with full information
 - **Expandable Sections**: Click to expand/collapse certificate details
 - **Complete Certificate Info**: Subject, issuer, validity, SANs, issues
+- **AI-Powered Use Cases**: Explains what each certificate is used for (when OpenAI is enabled)
 - **Color Coding**: ✅ Valid (green), ⚠️ Expiring (yellow), 🔴 Expired (red)
 - **Mobile Responsive**: Works on any device
 - **Print Friendly**: Ready for PDF export
@@ -324,6 +325,216 @@ A beautiful, downloadable HTML file with:
 3. Click certificates to expand/collapse details
 4. Use "Expand/Collapse All" button
 5. Print or save as PDF for compliance
+
+**Sample HTML Report Structure:**
+
+<details>
+<summary>📄 Click to view HTML sample code</summary>
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Kubernetes Certificate Health Report</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .status-banner {
+            background: #10b981; /* Green for HEALTHY */
+            color: white;
+            padding: 30px;
+            text-align: center;
+            font-size: 1.8em;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 40px;
+        }
+        .certificate {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .certificate-header {
+            padding: 20px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 Kubernetes Certificate Health Report</h1>
+            <div class="timestamp">2025-11-29 12:14:45 UTC</div>
+        </div>
+        
+        <div class="status-banner">HEALTHY</div>
+        
+        <div class="summary">
+            <div class="summary-card">
+                <div class="label">Total Certificates</div>
+                <div class="number total">15</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Valid</div>
+                <div class="number valid">15</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Expired</div>
+                <div class="number expired">0</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Expiring Soon</div>
+                <div class="number expiring">0</div>
+            </div>
+        </div>
+        
+        <div class="content">
+            <h2>📋 Certificate Details</h2>
+            
+            <div class="certificate">
+                <div class="certificate-header">
+                    <div class="certificate-title">apiserver</div>
+                    <div class="certificate-status status-valid">
+                        VALID (1094 days remaining)
+                    </div>
+                </div>
+                <div class="certificate-body">
+                    <div class="cert-detail">
+                        <strong>Path:</strong>
+                        <div class="value">/var/lib/minikube/certs/apiserver.crt</div>
+                    </div>
+                    <div class="cert-detail">
+                        <strong>Subject:</strong>
+                        <div class="value">{"CN": "minikube", "O": "system:masters"}</div>
+                    </div>
+                    <div class="cert-detail">
+                        <strong>Issuer:</strong>
+                        <div class="value">{"CN": "minikubeCA"}</div>
+                    </div>
+                    <div class="cert-detail">
+                        <strong>Validity:</strong>
+                        <div class="value">
+                            Not Before: 2025-11-28 10:57:25<br>
+                            Not After: 2028-11-28 10:57:25
+                        </div>
+                    </div>
+                    <div class="cert-detail">
+                        <strong>Subject Alternative Names:</strong>
+                        <div class="value">DNS: kubernetes, kubernetes.default...</div>
+                        <div class="value">IP: 10.96.0.1, 127.0.0.1...</div>
+                    </div>
+                    <div class="cert-detail" style="background: #eff6ff; border-left: 4px solid #3b82f6;">
+                        <strong>💡 Use Case (AI-Powered):</strong>
+                        <div class="value">
+                            <strong>1.</strong> The 'apiserver' certificate is used for securing 
+                            communication to the Kubernetes API server...<br><br>
+                            <strong>2.</strong> It is used by the Kubernetes API server component...<br><br>
+                            <strong>3.</strong> It is crucial for cluster security as it prevents 
+                            man-in-the-middle attacks...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- More certificates... -->
+            
+            <div class="section">
+                <h2>🚨 Issues & Warnings</h2>
+                <div class="issue">⚠️ apiserver: Unexpected issuer: minikubeCA</div>
+            </div>
+            
+            <div class="section">
+                <h2>💡 Recommendations</h2>
+                <div class="recommendation">
+                    • Regularly monitor certificate expiration dates
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function toggleCertificate(element) {
+            element.parentElement.classList.toggle('expanded');
+        }
+    </script>
+</body>
+</html>
+```
+
+</details>
+
+**Visual Preview:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  🔐 Kubernetes Certificate Health Report                │
+│  2025-11-29 12:14:45 UTC                                │
+├─────────────────────────────────────────────────────────┤
+│  ┌───────────────────────────────────────────────────┐  │
+│  │              STATUS: HEALTHY                      │  │
+│  └───────────────────────────────────────────────────┘  │
+├─────────────────────────────────────────────────────────┤
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐│
+│  │ Total: 15│  │ Valid: 15│  │Expired: 0│  │Expiring:0││
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘│
+├─────────────────────────────────────────────────────────┤
+│  📋 Certificate Details                                 │
+│  ┌─────────────────────────────────────────────────────┐│
+│  │ ▶ apiserver          [VALID - 1094 days remaining] ││
+│  ├─────────────────────────────────────────────────────┤│
+│  │ Path: /var/lib/minikube/certs/apiserver.crt        ││
+│  │ Subject: {"CN": "minikube"}                         ││
+│  │ Issuer: {"CN": "minikubeCA"}                        ││
+│  │ Validity: 2025-11-28 to 2028-11-28                 ││
+│  │ 💡 Use Case (AI-Powered):                           ││
+│  │    1. The 'apiserver' certificate is used for...   ││
+│  │    2. It is used by the Kubernetes API server...    ││
+│  │    3. It is crucial for cluster security...        ││
+│  └─────────────────────────────────────────────────────┘│
+│  ┌─────────────────────────────────────────────────────┐│
+│  │ ▶ etcd-server        [VALID - 364 days remaining]  ││
+│  └─────────────────────────────────────────────────────┘│
+│  ... (more certificates)                                │
+├─────────────────────────────────────────────────────────┤
+│  🚨 Issues & Warnings                                   │
+│  ⚠️ apiserver: Unexpected issuer: minikubeCA            │
+├─────────────────────────────────────────────────────────┤
+│  💡 Recommendations                                     │
+│  • Regularly monitor certificate expiration dates      │
+│  • Consider automating certificate renewal             │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key Features:**
+- **Gradient Header**: Purple gradient with timestamp
+- **Status Banner**: Color-coded (green/yellow/red) based on overall health
+- **Summary Cards**: Visual cards showing total, valid, expired, expiring counts
+- **Expandable Certificates**: Click any certificate to see full details
+- **AI Use Cases**: Blue-highlighted boxes explaining certificate purposes (when enabled)
+- **Issue Highlighting**: Red/yellow boxes for expired/expiring certificates
+- **Responsive Design**: Adapts to mobile, tablet, and desktop screens
+- **Interactive**: JavaScript-powered expand/collapse functionality
 
 ---
 
