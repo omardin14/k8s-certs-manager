@@ -288,10 +288,47 @@ test:
 		exit 1; \
 	fi
 
-# View application logs
+# View application logs (watches until completion)
 logs:
-	@echo "📝 Viewing application logs..."
-	@kubectl logs job/kube-certs-health-check -n kube-certs -c slack-notifier --tail=50
+	@echo "📝 Waiting for pod and streaming logs..."
+	@echo "⏳ Waiting for job pod to be created (max 60 seconds)..."
+	@pod_name=""; \
+	timeout=60; \
+	while [ $$timeout -gt 0 ]; do \
+		pod_name=$$(kubectl get pod -n kube-certs -l job-name=kube-certs-health-check -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); \
+		if [ -n "$$pod_name" ]; then \
+			echo "✅ Found pod: $$pod_name"; \
+			break; \
+		fi; \
+		sleep 2; \
+		timeout=$$((timeout - 2)); \
+	done; \
+	if [ -z "$$pod_name" ]; then \
+		echo "❌ No pod found after 60 seconds. Run 'make status' to check deployment status."; \
+		exit 1; \
+	fi; \
+	pod_phase=$$(kubectl get pod $$pod_name -n kube-certs -o jsonpath='{.status.phase}' 2>/dev/null); \
+	if [ "$$pod_phase" = "Succeeded" ] || [ "$$pod_phase" = "Failed" ]; then \
+		echo "📄 Pod has completed ($$pod_phase). Showing logs:"; \
+		kubectl logs $$pod_name -n kube-certs -c slack-notifier --tail=100; \
+		exit 0; \
+	fi; \
+	echo "⏳ Waiting for slack-notifier container to be ready (max 30 seconds)..."; \
+	timeout=30; \
+	while [ $$timeout -gt 0 ]; do \
+		container_ready=$$(kubectl get pod $$pod_name -n kube-certs -o jsonpath='{.status.containerStatuses[?(@.name=="slack-notifier")].ready}' 2>/dev/null); \
+		if [ "$$container_ready" = "true" ]; then \
+			break; \
+		fi; \
+		container_state=$$(kubectl get pod $$pod_name -n kube-certs -o jsonpath='{.status.containerStatuses[?(@.name=="slack-notifier")].state.waiting.reason}' 2>/dev/null); \
+		if [ -n "$$container_state" ]; then \
+			echo "⏳ Container state: $$container_state ($$timeout seconds remaining)"; \
+		fi; \
+		sleep 2; \
+		timeout=$$((timeout - 2)); \
+	done; \
+	echo "📺 Streaming logs (press Ctrl+C to stop watching, logs will continue until job completes)..."; \
+	kubectl logs -f $$pod_name -n kube-certs -c slack-notifier
 
 # Check deployment status
 status:

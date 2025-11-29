@@ -38,7 +38,14 @@ class KubeCertsManagerApp:
         self.slack_client = SlackClient(self.config.get_slack_token())
         self.slack_notifier = SlackNotifier(self.slack_client)
         self.cert_scanner = CertificateScanner(self.config.get_cert_base_path())
-        self.cert_analyzer = CertificateAnalyzer()
+        # Initialize analyzer with OpenAI if enabled
+        if self.config.is_openai_enabled():
+            self.cert_analyzer = CertificateAnalyzer(
+                openai_api_key=self.config.get_openai_api_key(),
+                openai_model=self.config.get_openai_model()
+            )
+        else:
+            self.cert_analyzer = CertificateAnalyzer()
         
         logger.info("Kubernetes certificate health check app initialized successfully")
     

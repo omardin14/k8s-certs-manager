@@ -5,7 +5,8 @@ Analyzes certificate scan results and provides insights.
 """
 
 import logging
-from typing import Dict, Any, List
+import os
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -14,9 +15,17 @@ logger = logging.getLogger(__name__)
 class CertificateAnalyzer:
     """Analyzes certificate scan results."""
     
-    def __init__(self):
-        """Initialize the certificate analyzer."""
-        pass
+    def __init__(self, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4"):
+        """
+        Initialize the certificate analyzer.
+        
+        Args:
+            openai_api_key: OpenAI API key (optional, for AI-powered analysis)
+            openai_model: OpenAI model to use (default: gpt-4)
+        """
+        self.openai_api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
+        self.openai_model = openai_model
+        self.openai_enabled = self.openai_api_key is not None
     
     def analyze_results(self, scan_results: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -52,10 +61,36 @@ class CertificateAnalyzer:
         else:
             analysis['overall_status'] = 'healthy'
         
+        # Track AI requests for summary
+        ai_requests_made = 0
+        ai_requests_successful = 0
+        ai_requests_failed = 0
+        
         # Analyze each certificate
         for cert in certificates:
             cert_analysis = self._analyze_certificate(cert)
+            
+            # Add AI-powered use case explanation if OpenAI is enabled
+            if self.openai_enabled:
+                try:
+                    ai_requests_made += 1
+                    use_case = self._get_certificate_use_case(cert)
+                    if use_case:
+                        ai_requests_successful += 1
+                        cert_analysis['use_case'] = use_case
+                        cert['use_case'] = use_case  # Also add to original cert for HTML report
+                    else:
+                        ai_requests_failed += 1
+                except Exception as e:
+                    ai_requests_failed += 1
+                    logger.warning(f"⚠️ Could not get AI use case for {cert.get('name')}: {e}")
+            
             analysis['certificate_details'].append(cert_analysis)
+        
+        # Log AI request summary if any were made
+        if ai_requests_made > 0:
+            logger.info(f"🤖 AI Analysis Summary: {ai_requests_successful}/{ai_requests_made} use cases generated successfully" + 
+                       (f" ({ai_requests_failed} failed)" if ai_requests_failed > 0 else ""))
             
             # Collect critical issues
             if cert.get('status') == 'expired':
@@ -110,8 +145,79 @@ class CertificateAnalyzer:
             'days_until_expiry': cert.get('days_until_expiry'),
             'issues': cert.get('issues', []),
             'subject': cert.get('subject', {}),
-            'issuer': cert.get('issuer', {})
+            'issuer': cert.get('issuer', {}),
+            'use_case': cert.get('use_case')  # Will be populated by AI if enabled
         }
+    
+    def _get_certificate_use_case(self, cert: Dict[str, Any]) -> Optional[str]:
+        """
+        Get AI-powered explanation of certificate use case.
+        
+        Args:
+            cert: Certificate information dictionary
+            
+        Returns:
+            Use case explanation or None if OpenAI is not available
+        """
+        if not self.openai_enabled:
+            return None
+        
+        cert_name = cert.get('name', 'unknown')
+        import time
+        start_time = time.time()
+        
+        try:
+            from openai import OpenAI
+            
+            logger.info(f"🤖 Requesting AI use case for certificate: {cert_name}")
+            
+            client = OpenAI(api_key=self.openai_api_key)
+            
+            subject = cert.get('subject', {})
+            issuer = cert.get('issuer', {})
+            path = cert.get('path', '')
+            
+            # Build prompt for OpenAI
+            prompt = f"""Explain the use case and purpose of this Kubernetes certificate in 2-3 sentences.
+
+Certificate Name: {cert_name}
+Path: {path}
+Subject: {subject}
+Issuer: {issuer}
+
+Provide a clear, concise explanation of:
+1. What this certificate is used for in a Kubernetes cluster
+2. Which component(s) use it
+3. Why it's important for cluster security
+
+Keep the response brief and technical."""
+            
+            response = client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": "You are a Kubernetes security expert. Provide clear, concise explanations of Kubernetes certificate purposes."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0.3
+            )
+            
+            elapsed_time = time.time() - start_time
+            use_case = response.choices[0].message.content.strip()
+            
+            # Log success with useful information
+            tokens_used = response.usage.total_tokens if hasattr(response, 'usage') and response.usage else 'unknown'
+            logger.info(f"✅ AI use case generated for '{cert_name}' in {elapsed_time:.2f}s (tokens: {tokens_used})")
+            
+            return use_case
+            
+        except ImportError:
+            logger.warning("⚠️ OpenAI library not available. Install with: pip install openai")
+            return None
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            logger.error(f"❌ Failed to get AI use case for '{cert_name}' after {elapsed_time:.2f}s: {str(e)}")
+            return None
     
     def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
         """
