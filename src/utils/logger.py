@@ -48,6 +48,8 @@ def setup_logging(level: str = "INFO", debug: bool = False) -> None:
     # Suppress some noisy loggers
     logging.getLogger('urllib3').setLevel(logging.WARNING)
     logging.getLogger('requests').setLevel(logging.WARNING)
+    # Suppress httpx INFO logs for OpenAI requests (we log our own)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

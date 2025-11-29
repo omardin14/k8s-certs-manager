@@ -174,7 +174,19 @@ class SlackNotifier:
                             
                             # Analyze results
                             from certs_analyzer import CertificateAnalyzer
-                            analyzer = CertificateAnalyzer()
+                            from utils import Config
+                            
+                            # Initialize analyzer with OpenAI if enabled
+                            config = Config()
+                            if config.is_openai_enabled():
+                                analyzer = CertificateAnalyzer(
+                                    openai_api_key=config.get_openai_api_key(),
+                                    openai_model=config.get_openai_model()
+                                )
+                                logger.info("🤖 AI-powered certificate analysis enabled")
+                            else:
+                                analyzer = CertificateAnalyzer()
+                            
                             analysis = analyzer.analyze_results(scan_data)
                             
                             # Send the formatted report

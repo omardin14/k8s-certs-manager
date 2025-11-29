@@ -423,11 +423,47 @@ class HTMLReportGenerator:
                         </div>
                     </div>
                     {HTMLReportGenerator._generate_san_html(san)}
+                    {HTMLReportGenerator._generate_use_case_html(cert.get('use_case'))}
                     {HTMLReportGenerator._generate_issues_html(issues)}
                 </div>
             </div>
             """
         return html
+    
+    @staticmethod
+    def _generate_use_case_html(use_case: Optional[str]) -> str:
+        """Generate HTML for certificate use case (AI-powered)."""
+        if not use_case:
+            return ""
+        
+        # Format the use case text to handle numbered points properly
+        import re
+        
+        # Replace newlines with spaces first to normalize
+        text = use_case.replace('\n', ' ').replace('\r', ' ').strip()
+        
+        # Split by numbered points (pattern: number followed by period and space)
+        # This will split: "1. text 2. text 3. text" into parts
+        parts = re.split(r'(\d+\.\s+)', text)
+        
+        formatted_parts = []
+        for i, part in enumerate(parts):
+            if re.match(r'^\d+\.\s+$', part):
+                # This is a numbered point marker (e.g., "1. ")
+                if formatted_parts:  # Add line break before new point (except first)
+                    formatted_parts.append('<br><br>')
+                formatted_parts.append(f'<strong>{part}</strong>')
+            elif part.strip():  # Only add non-empty text parts
+                formatted_parts.append(part.strip())
+        
+        formatted_text = ''.join(formatted_parts)
+        
+        return f"""
+                    <div class="cert-detail" style="background: #eff6ff; border-left: 4px solid #3b82f6;">
+                        <strong>💡 Use Case (AI-Powered):</strong>
+                        <div class="value" style="margin-top: 8px; color: #1e40af; line-height: 1.8;">{formatted_text}</div>
+                    </div>
+        """
     
     @staticmethod
     def _generate_san_html(san: Dict[str, Any]) -> str:
