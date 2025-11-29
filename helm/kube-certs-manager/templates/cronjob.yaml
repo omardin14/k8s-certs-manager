@@ -71,8 +71,14 @@ spec:
             volumeMounts:
             - name: {{ .Values.volumes.shared.name }}
               mountPath: {{ .Values.slack.outputDir }}
-            - name: {{ .Values.volumes.kubeconfig.name }}
-              mountPath: /etc/kubernetes
+            - name: {{ .Values.volumes.kubeCerts.name }}
+              mountPath: /etc/kubernetes/pki
+              readOnly: true
+            {{- if .Values.volumes.minikubeCerts }}
+            - name: {{ .Values.volumes.minikubeCerts.name }}
+              mountPath: /var/lib/minikube/certs
+              readOnly: true
+            {{- end }}
             env:
             - name: PYTHONPATH
               value: "/app"
@@ -137,8 +143,6 @@ spec:
             volumeMounts:
             - name: {{ .Values.volumes.shared.name }}
               mountPath: {{ .Values.slack.outputDir }}
-            - name: {{ .Values.volumes.kubeconfig.name }}
-              mountPath: /etc/kubernetes
             {{- if .Values.slack.resources }}
             resources:
               {{- toYaml .Values.slack.resources | nindent 14 }}
@@ -163,9 +167,15 @@ spec:
             {{- else }}
             {{- toYaml .Values.volumes.shared | nindent 12 }}
             {{- end }}
-          - name: {{ .Values.volumes.kubeconfig.name }}
+          - name: {{ .Values.volumes.kubeCerts.name }}
             hostPath:
-              path: {{ .Values.volumes.kubeconfig.hostPath.path }}
-              type: {{ .Values.volumes.kubeconfig.hostPath.type }}
+              path: {{ .Values.volumes.kubeCerts.hostPath.path }}
+              type: {{ .Values.volumes.kubeCerts.hostPath.type }}
+          {{- if .Values.volumes.minikubeCerts }}
+          - name: {{ .Values.volumes.minikubeCerts.name }}
+            hostPath:
+              path: {{ .Values.volumes.minikubeCerts.hostPath.path }}
+              type: {{ .Values.volumes.minikubeCerts.hostPath.type }}
+          {{- end }}
 {{- end }}
 

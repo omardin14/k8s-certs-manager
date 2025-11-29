@@ -17,6 +17,22 @@ spec:
         spec:
           serviceAccountName: kube-certs-sa
           restartPolicy: Never
+          # Init container to ensure parent directory exists (required for DirectoryOrCreate to work)
+          initContainers:
+          - name: setup-certs-parent
+            image: busybox:latest
+            command: ['sh', '-c']
+            args:
+              - |
+                # Ensure /etc/kubernetes exists so DirectoryOrCreate can create /etc/kubernetes/pki
+                mkdir -p /host/etc/kubernetes
+                echo "Parent directory verified"
+            volumeMounts:
+            - name: kube-certs-parent
+              mountPath: /host/etc/kubernetes
+            securityContext:
+              runAsUser: 0
+              privileged: true
           containers:
           # Certificate scanner container
           - name: cert-scanner
@@ -38,13 +54,23 @@ spec:
             volumeMounts:
             - name: cert-scan-results
               mountPath: /tmp/cert-scan-results
-            - name: kubeconfig
-              mountPath: /etc/kubernetes
+            - name: kube-certs
+              mountPath: /etc/kubernetes/pki
+              readOnly: true
+            - name: minikube-certs
+              mountPath: /var/lib/minikube/certs
+              readOnly: true
             env:
             - name: PYTHONPATH
               value: "/app"
             securityContext:
-              privileged: true
+              runAsNonRoot: true
+              runAsUser: 1000
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false  # Need write access for temp files
+              capabilities:
+                drop:
+                - ALL
             resources:
               requests:
                 memory: "128Mi"
@@ -75,8 +101,6 @@ spec:
             volumeMounts:
             - name: cert-scan-results
               mountPath: /tmp/cert-scan-results
-            - name: kubeconfig
-              mountPath: /etc/kubernetes
             resources:
               requests:
                 memory: "64Mi"
@@ -88,11 +112,21 @@ spec:
           volumes:
           - name: cert-scan-results
             emptyDir: {}
-          - name: kubeconfig
+          - name: kube-certs-parent
             hostPath:
               path: /etc/kubernetes
-              type: Directory
+              type: DirectoryOrCreate
+          - name: kube-certs
+            hostPath:
+              path: /etc/kubernetes/pki
+              type: DirectoryOrCreate
+          - name: minikube-certs
+            hostPath:
+              path: /var/lib/minikube/certs
+              type: DirectoryOrCreate
           
           nodeSelector:
             kubernetes.io/os: linux
+            # Optional: Only run on control plane nodes (uncomment if you have node labels)
+            # node-role.kubernetes.io/control-plane: ""
 

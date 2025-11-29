@@ -30,7 +30,13 @@ certscanner:
   
   # Security context
   securityContext:
-    privileged: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false  # Need write access for temp files
+    capabilities:
+      drop:
+      - ALL
 
 # Slack notifier configuration
 image:
@@ -156,12 +162,21 @@ volumes:
     name: cert-scan-results
     type: emptyDir
   
-  # Kubeconfig volume
-  kubeconfig:
-    name: kubeconfig
+  # Kubernetes certificates volume (read-only)
+  # Note: For minikube, this path may not exist. The scanner will handle missing certificates gracefully.
+  kubeCerts:
+    name: kube-certs
     hostPath:
-      path: /etc/kubernetes
-      type: Directory
+      path: /etc/kubernetes/pki
+      type: DirectoryOrCreate
+  
+  # Minikube certificates volume (read-only)
+  # For minikube clusters, certificates are stored here
+  minikubeCerts:
+    name: minikube-certs
+    hostPath:
+      path: /var/lib/minikube/certs
+      type: DirectoryOrCreate
 
 # Monitoring and logging
 monitoring:

@@ -16,6 +16,7 @@ A complete Kubernetes solution that scans cluster certificates and automatically
 - [Slack Setup](#-slack-app-setup)
 - [What You'll Get](#-what-youll-get-in-slack)
 - [Configuration](#-configuration)
+- [Security](#-security)
 - [Troubleshooting](#-troubleshooting)
 - [Cleanup](#-cleanup)
 
@@ -585,14 +586,185 @@ make test
 
 ---
 
-## 🔐 Security Notes
+## 🔐 Security
+
+This application requires access to Kubernetes certificate files to perform health checks. The following security measures are implemented:
+
+### Security Measures
+
+#### 1. Non-Privileged Container
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+```
+
+**Benefits:**
+- Container runs as non-root user (UID 1000)
+- No privilege escalation allowed
+- All Linux capabilities dropped
+- Follows principle of least privilege
+
+#### 2. Read-Only Certificate Mount
+
+```yaml
+volumeMounts:
+- name: kube-certs
+  mountPath: /etc/kubernetes/pki
+  readOnly: true
+```
+
+**Benefits:**
+- Only mounts the certificate directory (`/etc/kubernetes/pki`)
+- Read-only access prevents any modifications
+- No access to other sensitive files in `/etc/kubernetes`
+- Cannot access `admin.conf` or other configuration files
+
+#### 3. Minimal Volume Access
+
+- **Scanner container**: Only read-only access to `/etc/kubernetes/pki`
+- **Notifier container**: No certificate access (only needs shared results volume)
+- Prevents unnecessary exposure of sensitive data
+
+#### 4. Scope Reduction
+
+Only the certificate directory is mounted, preventing access to:
+- `admin.conf` (kubeconfig with admin privileges)
+- `scheduler.conf` (scheduler configuration)
+- `controller-manager.conf` (controller manager config)
+- `manifests/` (static pod definitions)
+
+### Remaining Considerations
+
+#### Host Path Access
+
+The container still needs host path access to read certificates because:
+- Kubernetes certificates are stored on the filesystem (not in etcd)
+- The container needs to run on a node that has access to the certificate directory
+- This is typically only on control plane nodes
+
+**Mitigations:**
+- Read-only mount prevents modification
+- Only certificate directory is mounted (not entire `/etc/kubernetes`)
+- Results contain metadata only, not private keys
+- Can add `nodeSelector` to restrict to control plane nodes only
+
+#### Certificate Read Access
+
+The container can read all certificates and their metadata. This is necessary for:
+- Reading certificate metadata (subject, issuer, validity)
+- Validating certificate configuration
+
+**Mitigations:**
+- Certificates are read-only (cannot be modified)
+- Results only contain metadata, not private keys
+- Consider encrypting results in transit
+
+### Best Practices
+
+1. **Restrict to Control Plane Nodes** (Optional)
+   ```yaml
+   nodeSelector:
+     kubernetes.io/os: linux
+     node-role.kubernetes.io/control-plane: ""
+   tolerations:
+   - key: node-role.kubernetes.io/control-plane
+     operator: Exists
+     effect: NoSchedule
+   ```
+
+2. **Regular Audits**
+   - Review who has access to certificate scanning jobs
+   - Monitor job executions and alert on failures
+   - Audit access logs regularly
+
+3. **RBAC Configuration**
+   - Use minimal RBAC permissions (already implemented)
+   - Regularly review and rotate service account tokens
+
+4. **Secrets Management**
+   - Store Slack tokens in Kubernetes secrets (already implemented)
+   - Never commit secrets to version control
+   - Rotate tokens regularly
+
+5. **Network Policies**
+   - Restrict network access if possible
+   - Only allow outbound connections to Slack API
+
+6. **Monitoring**
+   - Monitor job executions
+   - Alert on unexpected failures
+   - Track certificate expiry trends
+
+### Compliance Notes
+
+- ✅ The scanner only **reads** certificate metadata
+- ✅ It does **not** modify, delete, or export private keys
+- ✅ Results contain only public certificate information
+- ✅ No sensitive data is stored in logs (only certificate paths and metadata)
+- ✅ Certificates are mounted read-only
+
+### Alternative Approaches
+
+For even better security, consider:
+
+#### Option A: Use Kubernetes API
+- Query certificates through the Kubernetes API
+- Requires appropriate RBAC permissions
+- May not expose all certificate details
+
+#### Option B: DaemonSet on Control Plane Only
+```yaml
+kind: DaemonSet
+nodeSelector:
+  node-role.kubernetes.io/control-plane: ""
+tolerations:
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
+```
+
+#### Option C: Sidecar in API Server Pod
+- Run as a sidecar in the kube-apiserver static pod
+- Already has access to certificates
+- More complex deployment
+
+### General Security Best Practices
 
 - ✅ **Never commit tokens** - Use Kubernetes secrets or env vars
+- ✅ **Never include config.yaml in Docker images** - `.dockerignore` excludes it
 - ✅ **Use Docker Hub access tokens** instead of passwords
 - ✅ **Enable 2FA** on Docker Hub
 - ✅ **Use private repos** for sensitive workloads
 - ✅ **Rotate tokens regularly** in production
 - ✅ **Certificates are read-only** - No modifications are made
+
+### ⚠️ Important: Docker Image Security
+
+**Your `config.yaml` file with secrets is NOT included in the Docker image** because:
+
+1. **`.dockerignore` file** - Explicitly excludes `config.yaml` and other sensitive files
+2. **Build context** - The build uses `src/` directory as context, and `config.yaml` is in the root
+3. **Verification** - You can verify what's in your image:
+   ```bash
+   # Check what files are in the image
+   docker run --rm --entrypoint /bin/sh kube-certs-manager:latest -c "ls -la /app"
+   
+   # Search for config.yaml (should not exist)
+   docker run --rm --entrypoint /bin/sh kube-certs-manager:latest -c "find /app -name config.yaml"
+   ```
+
+**Best Practice:** Always verify your image doesn't contain secrets before pushing to Docker Hub:
+```bash
+# Before pushing, inspect the image
+docker history kube-certs-manager:latest
+docker run --rm --entrypoint /bin/sh kube-certs-manager:latest -c "cat /app/config.yaml" 2>/dev/null || echo "✅ config.yaml not found (good!)"
+```
 
 ---
 

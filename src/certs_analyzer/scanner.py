@@ -1,53 +1,92 @@
 """
 Certificate Scanner Module
 
-Scans Kubernetes cluster for certificates and extracts their information.
+Scans Kubernetes cluster for certificates by discovering them from static pod configurations.
 """
 
 import os
 import subprocess
 import logging
 import json
-from typing import Dict, Any, List, Optional
+import tempfile
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
+
+try:
+    from kubernetes import client, config
+    from kubernetes.stream import stream
+    from kubernetes.client.rest import ApiException
+    KUBERNETES_AVAILABLE = True
+except ImportError:
+    KUBERNETES_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("kubernetes library not available. Install with: pip install kubernetes")
 
 logger = logging.getLogger(__name__)
 
 
 class CertificateScanner:
-    """Scans Kubernetes cluster for certificates."""
+    """Scans Kubernetes cluster for certificates by discovering them from static pods."""
     
-    # Standard kubeadm certificate paths
-    KUBEADM_CERT_PATHS = {
-        'apiserver': '/etc/kubernetes/pki/apiserver.crt',
-        'apiserver-kubelet-client': '/etc/kubernetes/pki/apiserver-kubelet-client.crt',
-        'apiserver-etcd-client': '/etc/kubernetes/pki/apiserver-etcd-client.crt',
-        'ca': '/etc/kubernetes/pki/ca.crt',
-        'front-proxy-ca': '/etc/kubernetes/pki/front-proxy-ca.crt',
-        'front-proxy-client': '/etc/kubernetes/pki/front-proxy-client.crt',
-        'etcd-ca': '/etc/kubernetes/pki/etcd/ca.crt',
-        'etcd-server': '/etc/kubernetes/pki/etcd/server.crt',
-        'etcd-peer': '/etc/kubernetes/pki/etcd/peer.crt',
-        'etcd-healthcheck-client': '/etc/kubernetes/pki/etcd/healthcheck-client.crt',
+    # Static pod name patterns to look for
+    STATIC_POD_PATTERNS = {
+        'kube-apiserver': ['kube-apiserver'],
+        'etcd': ['etcd'],
+        'kube-controller-manager': ['kube-controller-manager'],
+        'kube-scheduler': ['kube-scheduler'],
     }
     
-    # API server manifest path (kubeadm)
-    API_SERVER_MANIFEST = '/etc/kubernetes/manifests/kube-apiserver.yaml'
+    # Certificate argument patterns to extract from pod args
+    CERT_ARG_PATTERNS = [
+        '--tls-cert-file',
+        '--tls-private-key-file',
+        '--client-ca-file',
+        '--etcd-cafile',
+        '--etcd-certfile',
+        '--etcd-keyfile',
+        '--kubelet-client-certificate',
+        '--kubelet-client-key',
+        '--service-account-key-file',
+        '--proxy-client-cert-file',
+        '--proxy-client-key-file',
+    ]
     
     def __init__(self, cert_base_path: str = '/etc/kubernetes/pki'):
         """
         Initialize the certificate scanner.
         
         Args:
-            cert_base_path: Base path for Kubernetes certificates
+            cert_base_path: Base path for Kubernetes certificates (fallback only)
         """
         self.cert_base_path = Path(cert_base_path)
         self.scan_results = {}
+        self.k8s_client = None
+        self.core_v1 = None
+        
+        # Initialize Kubernetes client if available
+        if KUBERNETES_AVAILABLE:
+            try:
+                # Try in-cluster config first (when running in a pod)
+                try:
+                    config.load_incluster_config()
+                    logger.info("✅ Loaded in-cluster Kubernetes configuration")
+                except:
+                    # Fall back to kubeconfig (for local testing)
+                    try:
+                        config.load_kube_config()
+                        logger.info("✅ Loaded kubeconfig from default location")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not load Kubernetes config: {e}")
+                
+                self.k8s_client = client.ApiClient()
+                self.core_v1 = client.CoreV1Api()
+            except Exception as e:
+                logger.warning(f"⚠️ Could not initialize Kubernetes client: {e}")
     
     def scan_cluster_certificates(self) -> Dict[str, Any]:
         """
-        Scan the Kubernetes cluster for all certificates.
+        Scan the Kubernetes cluster for all certificates by discovering them from static pods.
         
         Returns:
             Dictionary containing all certificate information
@@ -56,7 +95,7 @@ class CertificateScanner:
         
         results = {
             'scan_timestamp': datetime.utcnow().isoformat(),
-            'cluster_type': self._detect_cluster_type(),
+            'cluster_type': 'unknown',
             'certificates': [],
             'summary': {
                 'total_certificates': 0,
@@ -67,17 +106,31 @@ class CertificateScanner:
             }
         }
         
-        # Get certificate list from API server manifest (kubeadm)
-        cert_list = self._get_certificates_from_manifest()
+        # Try to discover certificates from static pods (primary method)
+        discovered_certs = {}
         
-        # If no manifest found, use standard kubeadm paths
-        if not cert_list:
-            cert_list = list(self.KUBEADM_CERT_PATHS.keys())
-            logger.info("Using standard kubeadm certificate paths")
+        if self.core_v1:
+            try:
+                discovered_certs = self._discover_certificates_from_static_pods()
+                if discovered_certs:
+                    results['cluster_type'] = 'kubeadm'
+                    logger.info(f"✅ Discovered {len(discovered_certs)} certificate(s) from static pods")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not discover certificates from static pods: {e}")
         
-        # Scan each certificate
-        for cert_name in cert_list:
-            cert_path = self._get_cert_path(cert_name)
+        # Also try filesystem-based discovery (fallback)
+        filesystem_certs = self._discover_certificates_from_filesystem()
+        
+        # Merge discovered certificates (static pods take precedence)
+        all_cert_paths = {**filesystem_certs, **discovered_certs}
+        
+        if not all_cert_paths:
+            logger.warning("⚠️ No certificates discovered. Trying fallback paths...")
+            # Fallback to standard kubeadm paths
+            all_cert_paths = self._get_fallback_cert_paths()
+        
+        # Scan each discovered certificate
+        for cert_name, cert_path in all_cert_paths.items():
             cert_info = self._scan_certificate(cert_name, cert_path)
             
             if cert_info:
@@ -99,92 +152,313 @@ class CertificateScanner:
         
         return results
     
-    def _detect_cluster_type(self) -> str:
+    def _discover_certificates_from_static_pods(self) -> Dict[str, Path]:
         """
-        Detect the type of Kubernetes cluster.
+        Discover certificate paths from static pod configurations.
         
         Returns:
-            'kubeadm' or 'custom'
+            Dictionary mapping certificate names to paths
         """
-        if os.path.exists(self.API_SERVER_MANIFEST):
-            return 'kubeadm'
-        elif os.path.exists('/etc/kubernetes/pki'):
-            return 'kubeadm'  # Likely kubeadm even without manifest
-        else:
-            return 'custom'
-    
-    def _get_certificates_from_manifest(self) -> List[str]:
-        """
-        Extract certificate paths from kube-apiserver manifest.
+        discovered = {}
         
-        Returns:
-            List of certificate names/paths
-        """
-        if not os.path.exists(self.API_SERVER_MANIFEST):
-            logger.debug(f"API server manifest not found at {self.API_SERVER_MANIFEST}")
-            return []
+        if not self.core_v1:
+            return discovered
         
         try:
-            import yaml
-            with open(self.API_SERVER_MANIFEST, 'r') as f:
-                manifest = yaml.safe_load(f)
+            # List all pods in kube-system namespace
+            pods = self.core_v1.list_namespaced_pod(namespace='kube-system')
             
-            cert_names = []
-            containers = manifest.get('spec', {}).get('containers', [])
-            for container in containers:
-                volume_mounts = container.get('volumeMounts', [])
-                for vm in volume_mounts:
-                    mount_path = vm.get('mountPath', '')
-                    if 'pki' in mount_path or 'cert' in mount_path.lower():
-                        # Extract certificate references from command args
-                        args = container.get('args', [])
-                        for arg in args:
-                            if '--' in arg and ('cert' in arg.lower() or 'key' in arg.lower()):
-                                # Extract certificate name from argument
-                                if '=' in arg:
-                                    cert_path = arg.split('=')[1]
-                                    cert_name = Path(cert_path).stem.replace('.crt', '').replace('.key', '')
-                                    if cert_name and cert_name not in cert_names:
-                                        cert_names.append(cert_name)
+            for pod in pods.items:
+                pod_name = pod.metadata.name
+                
+                # Check if this is a static pod
+                for component, patterns in self.STATIC_POD_PATTERNS.items():
+                    if any(pattern in pod_name for pattern in patterns):
+                        logger.info(f"📋 Found static pod: {component} ({pod_name})")
+                        
+                        # Extract certificate paths from this pod
+                        certs = self._extract_cert_paths_from_pod(pod, component)
+                        discovered.update(certs)
+                        break
             
-            logger.info(f"Found {len(cert_names)} certificates from manifest")
-            return cert_names if cert_names else []
+            return discovered
             
+        except ApiException as e:
+            logger.warning(f"⚠️ Kubernetes API error: {e}")
+            return {}
         except Exception as e:
-            logger.warning(f"Could not parse API server manifest: {e}")
-            return []
+            logger.warning(f"⚠️ Error discovering certificates from static pods: {e}")
+            return {}
     
-    def _get_cert_path(self, cert_name: str) -> Optional[Path]:
+    def _extract_cert_paths_from_pod(self, pod, component: str) -> Dict[str, Path]:
         """
-        Get the full path for a certificate.
+        Extract certificate paths from a static pod's configuration.
         
         Args:
-            cert_name: Name of the certificate
+            pod: Kubernetes pod object
+            component: Component name (e.g., 'kube-apiserver')
             
         Returns:
-            Path to certificate file or None
+            Dictionary mapping certificate names to paths
         """
-        # Check standard kubeadm paths
-        if cert_name in self.KUBEADM_CERT_PATHS:
-            path = Path(self.KUBEADM_CERT_PATHS[cert_name])
-            if path.exists():
-                return path
+        cert_paths = {}
         
-        # Try common variations
-        variations = [
-            self.cert_base_path / f"{cert_name}.crt",
-            self.cert_base_path / f"{cert_name}.pem",
-            self.cert_base_path / "etcd" / f"{cert_name}.crt",
-            self.cert_base_path / "etcd" / f"{cert_name}.pem",
+        if not pod.spec or not pod.spec.containers:
+            return cert_paths
+        
+        # Map volume mounts to paths
+        volume_map = {}
+        if pod.spec.volumes:
+            for vol in pod.spec.volumes:
+                if vol.host_path:
+                    volume_map[vol.name] = vol.host_path.path
+        
+        for container in pod.spec.containers:
+            # Map volume mounts to mount paths
+            mount_map = {}
+            if container.volume_mounts:
+                for vm in container.volume_mounts:
+                    mount_map[vm.name] = vm.mount_path
+                    # If volume has hostPath, use that
+                    if vm.name in volume_map:
+                        mount_map[vm.name] = volume_map[vm.name]
+            
+            # Extract certificate paths from container arguments
+            if container.args:
+                for arg in container.args:
+                    if '=' in arg:
+                        key, value = arg.split('=', 1)
+                        
+                        # Check if this is a certificate-related argument
+                        if any(pattern in key for pattern in self.CERT_ARG_PATTERNS):
+                            # Resolve the path
+                            cert_path = self._resolve_cert_path(value, mount_map, component)
+                            
+                            if cert_path and cert_path.exists():
+                                # Generate a friendly name
+                                cert_name = self._generate_cert_name(key, value, component)
+                                cert_paths[cert_name] = cert_path
+                                logger.info(f"  ✅ Found certificate: {cert_name} at {cert_path}")
+            
+            # Also check for certificates in mounted directories
+            if container.volume_mounts:
+                for vm in container.volume_mounts:
+                    mount_path = Path(vm.mount_path)
+                    if 'pki' in mount_path.as_posix().lower() or 'cert' in mount_path.as_posix().lower():
+                        # Try to find certificates in this directory
+                        dir_certs = self._find_certificates_in_directory(mount_path)
+                        cert_paths.update(dir_certs)
+        
+        return cert_paths
+    
+    def _resolve_cert_path(self, path_str: str, mount_map: Dict[str, str], component: str) -> Optional[Path]:
+        """
+        Resolve a certificate path, handling volume mounts and relative paths.
+        Tries multiple locations including common minikube paths.
+        
+        Args:
+            path_str: Path string from pod argument
+            mount_map: Mapping of volume names to mount paths
+            component: Component name
+            
+        Returns:
+            Resolved Path object or None
+        """
+        path = Path(path_str)
+        
+        # List of potential base paths to try
+        potential_bases = [
+            Path('/'),  # Try absolute path as-is
+            self.cert_base_path,  # Standard kubeadm path
+            Path('/var/lib/minikube/certs'),  # Minikube path
+            Path('/etc/kubernetes/pki'),  # Standard kubeadm
         ]
         
-        for path in variations:
+        # If absolute path, try it directly and with different bases
+        if path.is_absolute():
+            # Try the path as-is first
             if path.exists():
                 return path
+            
+            # Try to find it relative to different base paths
+            # Extract the relative part (e.g., /var/lib/minikube/certs/apiserver.crt -> apiserver.crt)
+            file_name = path.name
+            for base in potential_bases:
+                try:
+                    # Try the full path if it's under this base
+                    try:
+                        # Python 3.9+ has is_relative_to
+                        if hasattr(path, 'is_relative_to') and path.is_relative_to(base):
+                            if path.exists():
+                                return path
+                    except AttributeError:
+                        # Fall back to checking if path starts with base
+                        try:
+                            path_str = str(path)
+                            base_str = str(base)
+                            if path_str.startswith(base_str):
+                                if path.exists():
+                                    return path
+                        except:
+                            pass
+                    
+                    # Try to find the file by name in the base directory
+                    potential_path = base / file_name
+                    if potential_path.exists():
+                        return potential_path
+                    # Also try in subdirectories
+                    for subdir in ['etcd', '']:
+                        potential_path = base / subdir / file_name if subdir else base / file_name
+                        if potential_path.exists():
+                            return potential_path
+                except (ValueError, AttributeError, OSError):
+                    # Path operations failed, continue
+                    pass
+        
+        # Check if path references a volume mount
+        for vol_name, mount_path in mount_map.items():
+            if vol_name in path_str or path_str.startswith(vol_name):
+                resolved = Path(mount_path) / path.name
+                if resolved.exists():
+                    return resolved
+        
+        # Try relative to cert_base_path
+        if not path.is_absolute():
+            resolved = self.cert_base_path / path
+            if resolved.exists():
+                return resolved
+        
+        # Last resort: try to find by filename in common locations
+        file_name = path.name
+        for base in potential_bases:
+            if base.exists():
+                # Try direct
+                potential = base / file_name
+                if potential.exists():
+                    return potential
+                # Try in etcd subdirectory
+                potential = base / 'etcd' / file_name
+                if potential.exists():
+                    return potential
         
         return None
     
-    def _scan_certificate(self, cert_name: str, cert_path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    def _generate_cert_name(self, arg_key: str, arg_value: str, component: str) -> str:
+        """
+        Generate a friendly certificate name from argument key and value.
+        
+        Args:
+            arg_key: Argument key (e.g., '--tls-cert-file')
+            arg_value: Argument value (path)
+            component: Component name
+            
+        Returns:
+            Friendly certificate name
+        """
+        # Extract filename
+        path = Path(arg_value)
+        base_name = path.stem.replace('.crt', '').replace('.pem', '').replace('.key', '')
+        
+        # Map common patterns to friendly names
+        name_map = {
+            '--tls-cert-file': f'{component}-server',
+            '--client-ca-file': 'ca',
+            '--etcd-cafile': 'etcd-ca',
+            '--etcd-certfile': f'{component}-etcd-client',
+            '--kubelet-client-certificate': f'{component}-kubelet-client',
+            '--proxy-client-cert-file': f'{component}-front-proxy-client',
+        }
+        
+        if arg_key in name_map:
+            return name_map[arg_key]
+        
+        # Use component and base name
+        if base_name:
+            return f'{component}-{base_name}'
+        
+        return f'{component}-cert'
+    
+    def _find_certificates_in_directory(self, directory: Path) -> Dict[str, Path]:
+        """
+        Find all certificate files in a directory.
+        
+        Args:
+            directory: Directory path to search
+            
+        Returns:
+            Dictionary mapping certificate names to paths
+        """
+        certs = {}
+        
+        if not directory.exists() or not directory.is_dir():
+            return certs
+        
+        try:
+            # Look for .crt and .pem files
+            for ext in ['*.crt', '*.pem']:
+                for cert_file in directory.rglob(ext):
+                    if cert_file.is_file():
+                        cert_name = cert_file.stem
+                        # Skip key files
+                        if 'key' not in cert_name.lower():
+                            # Use relative path for name if in subdirectory
+                            rel_path = cert_file.relative_to(directory)
+                            if len(rel_path.parts) > 1:
+                                cert_name = '-'.join(rel_path.parts[:-1] + [cert_file.stem])
+                            certs[cert_name] = cert_file
+        except Exception as e:
+            logger.warning(f"⚠️ Error searching directory {directory}: {e}")
+        
+        return certs
+    
+    def _discover_certificates_from_filesystem(self) -> Dict[str, Path]:
+        """
+        Discover certificates from the filesystem (fallback method).
+        
+        Returns:
+            Dictionary mapping certificate names to paths
+        """
+        discovered = {}
+        
+        if not self.cert_base_path.exists():
+            return discovered
+        
+        logger.info(f"🔍 Searching filesystem at {self.cert_base_path}...")
+        discovered = self._find_certificates_in_directory(self.cert_base_path)
+        
+        return discovered
+    
+    def _get_fallback_cert_paths(self) -> Dict[str, Path]:
+        """
+        Get fallback certificate paths (standard kubeadm locations).
+        
+        Returns:
+            Dictionary mapping certificate names to paths
+        """
+        fallback = {}
+        
+        # Standard kubeadm certificate paths
+        standard_paths = {
+            'apiserver': '/etc/kubernetes/pki/apiserver.crt',
+            'apiserver-kubelet-client': '/etc/kubernetes/pki/apiserver-kubelet-client.crt',
+            'apiserver-etcd-client': '/etc/kubernetes/pki/apiserver-etcd-client.crt',
+            'ca': '/etc/kubernetes/pki/ca.crt',
+            'front-proxy-ca': '/etc/kubernetes/pki/front-proxy-ca.crt',
+            'front-proxy-client': '/etc/kubernetes/pki/front-proxy-client.crt',
+            'etcd-ca': '/etc/kubernetes/pki/etcd/ca.crt',
+            'etcd-server': '/etc/kubernetes/pki/etcd/server.crt',
+            'etcd-peer': '/etc/kubernetes/pki/etcd/peer.crt',
+            'etcd-healthcheck-client': '/etc/kubernetes/pki/etcd/healthcheck-client.crt',
+        }
+        
+        for name, path_str in standard_paths.items():
+            path = Path(path_str)
+            if path.exists():
+                fallback[name] = path
+        
+        return fallback
+    
+    def _scan_certificate(self, cert_name: str, cert_path: Path) -> Optional[Dict[str, Any]]:
         """
         Scan a single certificate file.
         
@@ -196,7 +470,7 @@ class CertificateScanner:
             Certificate information dictionary or None
         """
         if not cert_path or not cert_path.exists():
-            logger.warning(f"Certificate not found: {cert_name}")
+            logger.warning(f"Certificate not found: {cert_name} at {cert_path}")
             return None
         
         try:
@@ -407,4 +681,3 @@ class CertificateScanner:
             json.dump(self.scan_results, f, indent=2, default=str)
         
         logger.info(f"Results saved to {output_file}")
-

@@ -23,14 +23,30 @@ class Config:
         self.config_file = config_file
         self.config_data = {}
         
+        # Try to find config.yaml in current directory or parent directory
+        config_paths = [
+            config_file,  # Current directory
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), config_file),  # Parent directory (project root)
+            os.path.join("..", config_file),  # Parent directory (relative)
+        ]
+        
+        config_found = None
+        for path in config_paths:
+            if os.path.exists(path):
+                config_found = path
+                break
+        
         # Try to load from YAML file
-        if os.path.exists(config_file):
+        if config_found:
             try:
-                with open(config_file, 'r') as f:
+                with open(config_found, 'r') as f:
                     self.config_data = yaml.safe_load(f) or {}
-                print(f"✅ Loaded configuration from {config_file}")
+                print(f"✅ Loaded configuration from {config_found}")
+                self.config_file = config_found
             except Exception as e:
                 print(f"⚠️ Could not load config file: {e}, using environment variables")
+        else:
+            print(f"⚠️ config.yaml not found in {', '.join(config_paths)}, using environment variables")
         
         # Load values (YAML first, then env vars as fallback)
         self.slack_bot_token = self._get_value(['slack', 'bot_token'], 'SLACK_BOT_TOKEN')

@@ -1,17 +1,22 @@
-1. Get the application URL by running these commands:
-{{- if contains "NodePort" .Values.service.type }}
-  export NODE_PORT=$(kubectl get --namespace {{ .Values.namespace.name }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "kube-certs-manager.fullname" . }})
-  export NODE_IP=$(kubectl get nodes --namespace {{ .Values.namespace.name }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
-{{- else if contains "LoadBalancer" .Values.service.type }}
-     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status by running 'kubectl get --namespace {{ .Values.namespace.name }} svc -w {{ include "kube-certs-manager.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Values.namespace.name }} {{ include "kube-certs-manager.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:{{ .Values.service.port }}
-{{- else if contains "ClusterIP" .Values.service.type }}
-  export POD_NAME=$(kubectl get pods --namespace {{ .Values.namespace.name }} -l "app.kubernetes.io/name={{ include "kube-certs-manager.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
-  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Values.namespace.name }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
-  echo "Visit http://127.0.0.1:8080 to use your application"
-  kubectl --namespace {{ .Values.namespace.name }} port-forward $POD_NAME 8080:$CONTAINER_PORT
+1. Get the application status by running these commands:
+   kubectl get jobs -n {{ include "kube-certs-manager.namespace" . }}
+   kubectl get pods -n {{ include "kube-certs-manager.namespace" . }}
+
+2. View the certificate scanner logs:
+   kubectl logs job/{{ .Values.job.name }} -n {{ include "kube-certs-manager.namespace" . }} -c cert-scanner
+
+3. View the Slack notifier logs:
+   kubectl logs job/{{ .Values.job.name }} -n {{ include "kube-certs-manager.namespace" . }} -c slack-notifier
+
+4. To update the Slack token, create a secret with your token:
+   kubectl create secret generic {{ include "kube-certs-manager.secretName" . }} \
+     --from-literal=slack-bot-token="xoxb-your-slack-token-here" \
+     --namespace={{ include "kube-certs-manager.namespace" . }}
+
+5. To clean up the deployment:
+   helm uninstall {{ .Release.Name }} -n {{ include "kube-certs-manager.namespace" . }}
+
+{{- if .Values.dev.testMode }}
+⚠️  WARNING: Test mode is enabled. The job will send test messages instead of running actual certificate scans.
 {{- end }}
 
