@@ -240,11 +240,12 @@ class CertificateScanner:
                                 cert_paths[cert_name] = cert_path
                                 logger.info(f"  ✅ Found certificate: {cert_name} at {cert_path}")
             
-            # Also check for certificates in mounted directories
+            # Also check for certificates in mounted directories (only Kubernetes cert dirs)
             if container.volume_mounts:
                 for vm in container.volume_mounts:
                     mount_path = Path(vm.mount_path)
-                    if 'pki' in mount_path.as_posix().lower() or 'cert' in mount_path.as_posix().lower():
+                    # Only scan if it's a Kubernetes certificate directory
+                    if self._is_kubernetes_cert_directory(mount_path):
                         # Try to find certificates in this directory
                         dir_certs = self._find_certificates_in_directory(mount_path)
                         cert_paths.update(dir_certs)
@@ -266,9 +267,8 @@ class CertificateScanner:
         """
         path = Path(path_str)
         
-        # List of potential base paths to try
+        # List of potential base paths to try (only Kubernetes cert directories)
         potential_bases = [
-            Path('/'),  # Try absolute path as-is
             self.cert_base_path,  # Standard kubeadm path
             Path('/var/lib/minikube/certs'),  # Minikube path
             Path('/etc/kubernetes/pki'),  # Standard kubeadm
@@ -276,8 +276,8 @@ class CertificateScanner:
         
         # If absolute path, try it directly and with different bases
         if path.is_absolute():
-            # Try the path as-is first
-            if path.exists():
+            # Try the path as-is first, but only if it's a Kubernetes cert directory
+            if path.exists() and self._is_kubernetes_cert_directory(path.parent):
                 return path
             
             # Try to find it relative to different base paths
@@ -328,10 +328,10 @@ class CertificateScanner:
             if resolved.exists():
                 return resolved
         
-        # Last resort: try to find by filename in common locations
+        # Last resort: try to find by filename in common locations (only K8s cert dirs)
         file_name = path.name
         for base in potential_bases:
-            if base.exists():
+            if base.exists() and self._is_kubernetes_cert_directory(base):
                 # Try direct
                 potential = base / file_name
                 if potential.exists():
@@ -378,9 +378,56 @@ class CertificateScanner:
         
         return f'{component}-cert'
     
+    def _is_kubernetes_cert_directory(self, directory: Path) -> bool:
+        """
+        Check if a directory is a Kubernetes certificate directory.
+        
+        Args:
+            directory: Directory path to check
+            
+        Returns:
+            True if this is a Kubernetes cert directory, False otherwise
+        """
+        dir_str = str(directory)
+        
+        # Kubernetes certificate directories
+        k8s_cert_dirs = [
+            '/etc/kubernetes/pki',
+            '/var/lib/minikube/certs',
+            '/etc/kubernetes',
+        ]
+        
+        # System certificate directories to exclude
+        system_cert_dirs = [
+            '/etc/ssl/certs',
+            '/usr/share/ca-certificates',
+            '/etc/ca-certificates',
+            '/usr/local/share/ca-certificates',
+        ]
+        
+        # Check if it's a system cert directory (exclude)
+        for sys_dir in system_cert_dirs:
+            if dir_str.startswith(sys_dir):
+                return False
+        
+        # Check if it's a Kubernetes cert directory (include)
+        for k8s_dir in k8s_cert_dirs:
+            if dir_str.startswith(k8s_dir):
+                return True
+        
+        # If it contains 'pki' or 'kubernetes' in the path, it's likely a K8s cert dir
+        if 'pki' in dir_str.lower() or 'kubernetes' in dir_str.lower():
+            return True
+        
+        # If it contains 'minikube' and 'cert', it's likely a K8s cert dir
+        if 'minikube' in dir_str.lower() and 'cert' in dir_str.lower():
+            return True
+        
+        return False
+    
     def _find_certificates_in_directory(self, directory: Path) -> Dict[str, Path]:
         """
-        Find all certificate files in a directory.
+        Find all certificate files in a directory (only Kubernetes certificate directories).
         
         Args:
             directory: Directory path to search
@@ -393,19 +440,31 @@ class CertificateScanner:
         if not directory.exists() or not directory.is_dir():
             return certs
         
+        # Only scan Kubernetes certificate directories
+        if not self._is_kubernetes_cert_directory(directory):
+            logger.debug(f"Skipping non-Kubernetes certificate directory: {directory}")
+            return certs
+        
         try:
-            # Look for .crt and .pem files
+            # Look for .crt and .pem files (non-recursive to avoid system certs)
             for ext in ['*.crt', '*.pem']:
-                for cert_file in directory.rglob(ext):
+                # First check direct files in the directory
+                for cert_file in directory.glob(ext):
                     if cert_file.is_file():
                         cert_name = cert_file.stem
                         # Skip key files
                         if 'key' not in cert_name.lower():
-                            # Use relative path for name if in subdirectory
-                            rel_path = cert_file.relative_to(directory)
-                            if len(rel_path.parts) > 1:
-                                cert_name = '-'.join(rel_path.parts[:-1] + [cert_file.stem])
                             certs[cert_name] = cert_file
+                
+                # Also check in etcd subdirectory if it exists
+                etcd_dir = directory / 'etcd'
+                if etcd_dir.exists() and etcd_dir.is_dir():
+                    for cert_file in etcd_dir.glob(ext):
+                        if cert_file.is_file():
+                            cert_name = cert_file.stem
+                            # Skip key files
+                            if 'key' not in cert_name.lower():
+                                certs[f'etcd-{cert_name}'] = cert_file
         except Exception as e:
             logger.warning(f"⚠️ Error searching directory {directory}: {e}")
         
@@ -414,17 +473,25 @@ class CertificateScanner:
     def _discover_certificates_from_filesystem(self) -> Dict[str, Path]:
         """
         Discover certificates from the filesystem (fallback method).
+        Only scans Kubernetes certificate directories.
         
         Returns:
             Dictionary mapping certificate names to paths
         """
         discovered = {}
         
-        if not self.cert_base_path.exists():
-            return discovered
+        # Only scan known Kubernetes certificate directories
+        k8s_cert_dirs = [
+            self.cert_base_path,  # /etc/kubernetes/pki
+            Path('/var/lib/minikube/certs'),  # Minikube
+            Path('/etc/kubernetes/pki'),  # Standard kubeadm
+        ]
         
-        logger.info(f"🔍 Searching filesystem at {self.cert_base_path}...")
-        discovered = self._find_certificates_in_directory(self.cert_base_path)
+        for cert_dir in k8s_cert_dirs:
+            if cert_dir.exists() and self._is_kubernetes_cert_directory(cert_dir):
+                logger.info(f"🔍 Searching Kubernetes certificate directory: {cert_dir}")
+                dir_certs = self._find_certificates_in_directory(cert_dir)
+                discovered.update(dir_certs)
         
         return discovered
     
