@@ -1,0 +1,98 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kube-certs-health-check
+  namespace: kube-certs
+spec:
+  schedule: "0 0 * * *"  # Daily at midnight GMT
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: kube-certs
+            component: certificate-scan
+        spec:
+          serviceAccountName: kube-certs-sa
+          restartPolicy: Never
+          containers:
+          # Certificate scanner container
+          - name: cert-scanner
+            image: kube-certs-manager:latest
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                python -c "
+                import json
+                import sys
+                sys.path.insert(0, '/app')
+                from certs_analyzer import CertificateScanner
+                
+                scanner = CertificateScanner('/etc/kubernetes/pki')
+                results = scanner.scan_cluster_certificates()
+                scanner.save_results('/tmp/cert-scan-results/results.json')
+                print('Certificate scan complete. Results written to /tmp/cert-scan-results/results.json')
+                "
+            volumeMounts:
+            - name: cert-scan-results
+              mountPath: /tmp/cert-scan-results
+            - name: kubeconfig
+              mountPath: /etc/kubernetes
+            env:
+            - name: PYTHONPATH
+              value: "/app"
+            securityContext:
+              privileged: true
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          
+          # Slack notification sidecar container
+          - name: slack-notifier
+            image: kube-certs-manager:latest
+            env:
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-credentials
+                  key: slack-bot-token
+            - name: SLACK_CHANNEL
+              value: "#kube-certs"
+            - name: CERT_SCAN_OUTPUT_DIR
+              value: "/tmp/cert-scan-results"
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: slack-credentials
+                  key: openai-api-key
+                  optional: true
+            volumeMounts:
+            - name: cert-scan-results
+              mountPath: /tmp/cert-scan-results
+            - name: kubeconfig
+              mountPath: /etc/kubernetes
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+          
+          volumes:
+          - name: cert-scan-results
+            emptyDir: {}
+          - name: kubeconfig
+            hostPath:
+              path: /etc/kubernetes
+              type: Directory
+          
+          nodeSelector:
+            kubernetes.io/os: linux
+

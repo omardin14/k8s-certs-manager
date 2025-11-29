@@ -1,0 +1,19 @@
+apiVersion: v2
+name: kube-certs-manager
+description: A Helm chart for Kubernetes certificate health check with Slack notifications
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/kubernetes/kubernetes
+sources:
+  - https://github.com/kubernetes/kubernetes
+keywords:
+  - security
+  - kubernetes
+  - certificates
+  - slack
+  - monitoring
+maintainers:
+  - name: Your Name
+    email: your.email@example.com
+

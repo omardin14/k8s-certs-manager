@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kube-certs
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - slack-secret.yaml
+  - kube-certs-job.yaml
+
+images:
+  - name: kube-certs-manager
+    newName: slack-kube-bench  # Default, override with kustomize edit set image
+    newTag: latest
+

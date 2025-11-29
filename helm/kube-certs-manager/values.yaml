@@ -1,0 +1,186 @@
+# Default values for kube-certs-manager
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  # Image registry for all images
+  imageRegistry: ""
+  # Image pull policy
+  imagePullPolicy: IfNotPresent
+
+# Namespace configuration
+namespace:
+  # Name of the namespace (created by Makefile/kubectl)
+  name: kube-certs
+
+# Certificate scanner configuration
+certscanner:
+  # Certificate base path
+  certBasePath: "/etc/kubernetes/pki"
+  
+  # Resource limits and requests
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  
+  # Security context
+  securityContext:
+    privileged: true
+
+# Slack notifier configuration
+image:
+  # Slack notifier image configuration
+  # For local minikube: kube-certs-manager
+  # For Docker Hub: your-username/kube-certs-manager
+  repository: kube-certs-manager
+  tag: latest
+  pullPolicy: Never  # Use Never for local minikube, Always for Docker Hub
+
+slack:
+  
+  # Slack configuration
+  channel: "#kube-certs"
+  outputDir: "/tmp/cert-scan-results"
+  maxWaitTime: 300
+  
+  # Resource limits and requests
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "100m"
+  
+  # Slack bot token
+  # Can be provided as:
+  # 1. A string: --set slack.token="xoxb-your-token" (creates secret automatically)
+  # 2. Leave empty to use existing secret named 'slack-credentials'
+  token: ""  # Set via --set slack.token="xoxb-..." or leave empty to use existing secret
+
+# OpenAI configuration (optional)
+openai:
+  # OpenAI API key for AI-powered security analysis
+  # Can be provided as:
+  # 1. A string: --set openai.apiKey="sk-your-key" (creates secret automatically)
+  # 2. Leave empty to disable AI analysis (system works fine without it)
+  # 3. Use existing secret: --set openai.apiKey="" (relies on existing openai-credentials secret)
+  apiKey: ""  # Set via --set openai.apiKey="sk-..." or leave empty to disable AI analysis
+  
+  # Enable/disable AI analysis
+  enabled: true  # Set to false to completely disable AI features
+
+# Job configuration
+job:
+  # Job name
+  name: kube-certs-health-check
+  
+  # Job labels
+  labels: {}
+  
+  # Job annotations
+  annotations: {}
+  
+  # Restart policy
+  restartPolicy: Never
+  
+  # TTL for completed jobs (in seconds)
+  ttlSecondsAfterFinished: 3600
+
+# CronJob configuration
+cronjob:
+  # Enable CronJob (set to true for scheduled scans)
+  enabled: false
+  
+  # Cron schedule (default: daily at midnight GMT)
+  # Format: "minute hour day month weekday"
+  # Examples:
+  #   "0 0 * * *"     - Daily at midnight
+  #   "0 */6 * * *"   - Every 6 hours
+  #   "0 9 * * 1"     - Every Monday at 9 AM
+  #   "0 0 * * 0"     - Every Sunday at midnight
+  schedule: "0 0 * * *"
+  
+  # Number of successful jobs to keep
+  successfulJobsHistoryLimit: 3
+  
+  # Number of failed jobs to keep
+  failedJobsHistoryLimit: 3
+  
+  # Suspend cron job (useful for temporarily disabling)
+  suspend: false
+  
+  # Additional labels for cron jobs
+  labels: {}
+  
+  # Additional annotations for cron jobs
+  annotations: {}
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+  
+  # Service account name
+  serviceAccount:
+    name: kube-certs-sa
+    # Annotations for the service account
+    annotations: {}
+  
+  # Cluster role name
+  clusterRole:
+    name: kube-certs-role
+  
+  # Cluster role binding name
+  clusterRoleBinding:
+    name: kube-certs-binding
+
+# Node selection
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+
+# Volume configuration
+volumes:
+  # Shared volume for certificate scan results
+  shared:
+    name: cert-scan-results
+    type: emptyDir
+  
+  # Kubeconfig volume
+  kubeconfig:
+    name: kubeconfig
+    hostPath:
+      path: /etc/kubernetes
+      type: Directory
+
+# Monitoring and logging
+monitoring:
+  # Enable health checks
+  healthCheck:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  
+  # Log level
+  logLevel: INFO
+
+# Development and testing
+dev:
+  # Enable debug mode
+  debug: false
+  
+  # Test mode (sends test messages instead of real scan)
+  testMode: false
+
