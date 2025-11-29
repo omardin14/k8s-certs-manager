@@ -94,9 +94,12 @@ make logs
 
 ### 🔐 Certificate Scanning
 - Comprehensive certificate health checks
+- **Intelligent certificate discovery** from static pod configurations
+- Supports both **kubeadm** (`/etc/kubernetes/pki`) and **minikube** (`/var/lib/minikube/certs`) clusters
 - Scans all Kubernetes certificates (API server, CA, etcd, etc.)
 - Detects expired and expiring certificates
 - Validates certificate configuration against Kubernetes requirements
+- Filters out system certificates (only scans Kubernetes-specific certificates)
 - JSON output for detailed analysis
 
 ### 📱 Slack Integration
@@ -374,7 +377,7 @@ slack:
   
 # Certificate scanner
 certscanner:
-  certBasePath: "/etc/kubernetes/pki"
+  certBasePath: "/etc/kubernetes/pki"  # Default path (scanner also checks /var/lib/minikube/certs)
   
 # Resource limits
 resources:
@@ -433,11 +436,15 @@ make test
 
 **5. Certificates not found**
 ```bash
-# Verify certificate path
+# Verify certificate paths (check both kubeadm and minikube locations)
 kubectl exec -it job/kube-certs-health-check -n kube-certs -c cert-scanner -- ls -la /etc/kubernetes/pki
+kubectl exec -it job/kube-certs-health-check -n kube-certs -c cert-scanner -- ls -la /var/lib/minikube/certs
 
 # Check if cluster is kubeadm-based
 kubectl exec -it job/kube-certs-health-check -n kube-certs -c cert-scanner -- cat /etc/kubernetes/manifests/kube-apiserver.yaml
+
+# The scanner automatically discovers certificates from static pod configurations
+# It will check both standard kubeadm paths and minikube paths
 ```
 
 ### Debug Commands
@@ -610,26 +617,35 @@ securityContext:
 - All Linux capabilities dropped
 - Follows principle of least privilege
 
-#### 2. Read-Only Certificate Mount
+#### 2. Read-Only Certificate Mounts
+
+The scanner mounts certificate directories in read-only mode:
 
 ```yaml
 volumeMounts:
 - name: kube-certs
   mountPath: /etc/kubernetes/pki
   readOnly: true
+- name: minikube-certs
+  mountPath: /var/lib/minikube/certs
+  readOnly: true
 ```
 
 **Benefits:**
-- Only mounts the certificate directory (`/etc/kubernetes/pki`)
+- Only mounts certificate directories (not entire `/etc/kubernetes`)
+- Supports both standard kubeadm (`/etc/kubernetes/pki`) and minikube (`/var/lib/minikube/certs`) clusters
 - Read-only access prevents any modifications
-- No access to other sensitive files in `/etc/kubernetes`
-- Cannot access `admin.conf` or other configuration files
+- No access to other sensitive files in `/etc/kubernetes` (like `admin.conf`, `scheduler.conf`, etc.)
+- Scanner intelligently discovers certificates from static pod configurations
 
 #### 3. Minimal Volume Access
 
-- **Scanner container**: Only read-only access to `/etc/kubernetes/pki`
+- **Scanner container**: Only read-only access to certificate directories:
+  - `/etc/kubernetes/pki` (standard kubeadm clusters)
+  - `/var/lib/minikube/certs` (minikube clusters)
 - **Notifier container**: No certificate access (only needs shared results volume)
 - Prevents unnecessary exposure of sensitive data
+- Scanner automatically discovers certificate locations from static pod configurations
 
 #### 4. Scope Reduction
 
@@ -649,8 +665,9 @@ The container still needs host path access to read certificates because:
 - This is typically only on control plane nodes
 
 **Mitigations:**
-- Read-only mount prevents modification
-- Only certificate directory is mounted (not entire `/etc/kubernetes`)
+- Read-only mounts prevent modification
+- Only certificate directories are mounted (not entire `/etc/kubernetes`)
+- Supports both kubeadm and minikube certificate locations
 - Results contain metadata only, not private keys
 - Can add `nodeSelector` to restrict to control plane nodes only
 
